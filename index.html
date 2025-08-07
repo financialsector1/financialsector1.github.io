@@ -2,170 +2,182 @@
 <html lang="ar">
 <head>
   <meta charset="UTF-8">
-  <title>خريطة الفروع مع العناوين والمسافات</title>
+  <title>خريطة موحدة للبنوك والسفارات والخدمات</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-
-  <!-- Leaflet & Turf -->
-  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
-  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
-  <script src="https://unpkg.com/@turf/turf/turf.min.js"></script>
-
-  <!-- XLSX Export -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/xlsx/dist/xlsx.full.min.js"></script>
   <style>
-    #map { height: 85vh; }
+    html, body, #map { height: 100%; margin: 0; }
     .controls {
-      margin: 10px;
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      background: white;
+      padding: 10px;
+      z-index: 1000;
+      box-shadow: 0 0 5px #888;
+      border-radius: 8px;
     }
-    select, button {
-      margin: 5px;
-      padding: 6px;
+    .controls select, .controls button {
+      display: block;
+      margin-bottom: 5px;
+      width: 200px;
     }
   </style>
 </head>
 <body>
+<div id="map"></div>
+<div class="controls">
+  <select id="layerSelect">
+    <option value="banks">البنوك</option>
+    <option value="srafara">السفارات</option>
+    <option value="services">الخدمات</option>
+  </select>
+  <select id="governorateSelect">
+    <option value="all">اختر المحافظة</option>
+  </select>
+  <button onclick="findNearest()">أقرب موقع</button>
+  <button onclick="exportToExcel()">تصدير إلى Excel</button>
+  <button onclick="window.print()">طباعة</button>
+</div>
 
-  <div class="controls">
-    <select id="companySelect" onchange="filterByCompany()">
-      <option value="">🔍 اختر اسم الشركة</option>
-    </select>
-    <button onclick="loadData()">📂 تحميل البيانات</button>
-    <button onclick="calculateSimilarBranchDistances()">📏 حساب المسافات</button>
-    <button onclick="exportToExcel()">📥 تصدير إلى Excel</button>
-  </div>
+<script>
+  const map = L.map('map').setView([31.95, 35.2], 8);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
 
-  <div id="map"></div>
+  let layers = {
+    banks: L.layerGroup().addTo(map),
+    srafara: L.layerGroup(),
+    services: L.layerGroup()
+  };
 
-  <script>
-    let map = L.map('map').setView([31.95, 35.9], 8);
-    let srafaraLayer, filteredLayer;
-    let allBranches = [];
-    let filteredBranches = [];
-    let distanceResults = [];
-    let lineGroup = L.layerGroup().addTo(map);
+  let dataSources = {
+    banks: "https://raw.githubusercontent.com/palestinebank/palestinebank.github.io/main/pal_banks.json",
+    srafara: "https://raw.githubusercontent.com/srafaramallah/srafaramallah.github.io/main/srafara.json",
+    services: "https://raw.githubusercontent.com/servicespayment/servicespayment.github.io/main/servicespayment.json"
+  };
 
-    // خريطة الأساس
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      attribution: '&copy; OpenStreetMap contributors'
-    }).addTo(map);
+  let allData = { banks: [], srafara: [], services: [] };
+  let currentMarkers = [];
+  let currentLayer = 'banks';
 
-    // تحميل البيانات
-    async function loadData() {
-      if (srafaraLayer) map.removeLayer(srafaraLayer);
-      if (filteredLayer) map.removeLayer(filteredLayer);
-      lineGroup.clearLayers();
-      allBranches = [];
-      distanceResults = [];
-      document.getElementById("companySelect").innerHTML = '<option value="">🔍 اختر اسم الشركة</option>';
-
-      const srafaraURL = 'https://srafaramallah.github.io/srafara.json'; // ← غيّره إلى رابطك الصحيح
-      const res = await fetch(srafaraURL);
-      const data = await res.json();
-
-      srafaraLayer = L.geoJSON(data, {
-        onEachFeature: function (feature, layer) {
-          const name = feature.properties["اسم_ا"];
-          const address = feature.properties["العنو"] || "بدون عنوان";
-          if (name) {
-            const coords = feature.geometry.coordinates.slice().reverse(); // lat,lng
-            allBranches.push({ name, coords, layer, address });
+  function loadLayer(name) {
+    fetch(dataSources[name])
+      .then(res => res.json())
+      .then(geojson => {
+        allData[name] = [];
+        const layer = L.geoJSON(geojson, {
+          onEachFeature: function (feature, layer) {
+            let props = feature.properties;
+            let content = '';
+            for (const key in props) {
+              content += `<b>${key}:</b> ${props[key]}<br>`;
+            }
+            layer.bindPopup(content);
+            allData[name].push({ ...feature, _popupContent: content, latlng: layer.getLatLng() });
+          },
+          pointToLayer: (feature, latlng) => {
+            return L.marker(latlng);
           }
-        },
-        pointToLayer: (feature, latlng) => L.circleMarker(latlng, { radius: 6, color: 'gray' })
-      }).addTo(map);
-
-      // تعبئة القائمة المنسدلة
-      const uniqueNames = [...new Set(allBranches.map(b => b.name))].sort();
-      const select = document.getElementById("companySelect");
-      uniqueNames.forEach(name => {
-        const option = document.createElement("option");
-        option.value = name;
-        option.textContent = name;
-        select.appendChild(option);
-      });
-
-      alert("تم تحميل البيانات. الرجاء اختيار اسم الشركة.");
-    }
-
-    // فلترة الفروع حسب اسم الشركة
-    function filterByCompany() {
-      const selectedName = document.getElementById("companySelect").value;
-      distanceResults = [];
-      lineGroup.clearLayers();
-
-      if (filteredLayer) map.removeLayer(filteredLayer);
-      if (!selectedName) return;
-
-      filteredBranches = allBranches.filter(b => b.name === selectedName);
-
-      filteredLayer = L.layerGroup();
-      filteredBranches.forEach(b => {
-        const marker = L.circleMarker(b.coords, { radius: 6, color: 'blue' })
-          .bindPopup(`<b>${b.name}</b><br><small>${b.address}</small>`)
-          .addTo(filteredLayer);
-        b.layer = marker;
-      });
-      filteredLayer.addTo(map);
-      map.fitBounds(filteredLayer.getBounds());
-    }
-
-    // حساب المسافات وفتح جميع النوافذ (بما في ذلك الرئيسي)
-    function calculateSimilarBranchDistances() {
-      if (!filteredBranches || filteredBranches.length < 2) {
-        alert("يجب اختيار شركة تحتوي على أكثر من فرع.");
-        return;
-      }
-
-      distanceResults = [];
-      lineGroup.clearLayers();
-
-      const main = filteredBranches[Math.floor(Math.random() * filteredBranches.length)];
-      main.layer.setStyle({ color: 'red' });
-      const mainPopup = `<b>${main.name}</b><br>${main.address}<br>(فرع رئيسي)`;
-      main.layer.bindPopup(mainPopup).openPopup();
-
-      filteredBranches.forEach(branch => {
-        if (branch === main) return;
-
-        const from = turf.point([main.coords[1], main.coords[0]]);
-        const to = turf.point([branch.coords[1], branch.coords[0]]);
-        const dist = turf.distance(from, to, { units: 'kilometers' });
-        const distText = dist.toFixed(2);
-
-        distanceResults.push({
-          "الفرع الرئيسي": main.name,
-          "عنوان الرئيسي": main.address,
-          "إحداثيات الرئيسي": `${main.coords[0]}, ${main.coords[1]}`,
-          "الفرع": branch.name,
-          "عنوان الفرع": branch.address,
-          "إحداثيات الفرع": `${branch.coords[0]}, ${branch.coords[1]}`,
-          "المسافة (كم)": distText
         });
+        layers[name].clearLayers();
+        layers[name].addLayer(layer);
+        updateGovernorates(name);
+        if (name !== currentLayer) layers[name].remove();
+      });
+  }
 
-        // رسم الخط
-        L.polyline([main.coords, branch.coords], { color: 'green', weight: 2 }).addTo(lineGroup);
+  function updateGovernorates(name) {
+    const govSelect = document.getElementById("governorateSelect");
+    const items = allData[name];
+    const names = new Set();
+    items.forEach(f => {
+      const gov = f.properties?.المحافظة || f.properties?.Governorate || f.properties?.اسم_المحافظة || '';
+      if (gov) names.add(gov);
+    });
 
-        // Popup مع فتح تلقائي
-        const popupContent = `<b>${branch.name}</b><br>${branch.address}<br>المسافة إلى الرئيسي: ${distText} كم`;
-        branch.layer.bindPopup(popupContent).openPopup();
+    govSelect.innerHTML = `<option value="all">اختر المحافظة</option>`;
+    names.forEach(name => {
+      const opt = document.createElement("option");
+      opt.value = name;
+      opt.innerText = name;
+      govSelect.appendChild(opt);
+    });
+  }
+
+  function switchLayer(name) {
+    Object.keys(layers).forEach(l => map.removeLayer(layers[l]));
+    currentLayer = name;
+    map.addLayer(layers[name]);
+  }
+
+  document.getElementById("layerSelect").addEventListener("change", e => {
+    switchLayer(e.target.value);
+    updateGovernorates(e.target.value);
+  });
+
+  document.getElementById("governorateSelect").addEventListener("change", e => {
+    const selectedGov = e.target.value;
+    const items = allData[currentLayer];
+    layers[currentLayer].clearLayers();
+    items.forEach(f => {
+      const gov = f.properties?.المحافظة || f.properties?.Governorate || f.properties?.اسم_المحافظة || '';
+      if (selectedGov === 'all' || gov === selectedGov) {
+        const marker = L.marker(f.latlng).bindPopup(f._popupContent);
+        marker.addTo(layers[currentLayer]);
+      }
+    });
+  });
+
+  function findNearest() {
+    if (!navigator.geolocation) {
+      alert("المتصفح لا يدعم تحديد الموقع");
+      return;
+    }
+
+    navigator.geolocation.getCurrentPosition(pos => {
+      const { latitude, longitude } = pos.coords;
+      const userLatLng = L.latLng(latitude, longitude);
+      let nearest = null;
+      let minDistance = Infinity;
+
+      allData[currentLayer].forEach(f => {
+        const d = userLatLng.distanceTo(f.latlng);
+        if (d < minDistance) {
+          minDistance = d;
+          nearest = f;
+        }
       });
 
-      alert("تم حساب المسافات وفتح النوافذ لجميع الفروع.");
-    }
-
-    // تصدير النتائج إلى Excel مع العناوين
-    function exportToExcel() {
-      if (distanceResults.length === 0) {
-        alert("لا توجد نتائج لتصديرها.");
-        return;
+      if (nearest) {
+        const marker = L.marker(userLatLng).addTo(map).bindPopup("موقعك").openPopup();
+        L.polyline([userLatLng, nearest.latlng], { color: 'blue' }).addTo(map);
+        const dist_km = (minDistance / 1000).toFixed(2);
+        const popup = nearest._popupContent + `<b>المسافة:</b> ${dist_km} كم`;
+        L.marker(nearest.latlng).addTo(map).bindPopup(popup).openPopup();
+        map.setView(userLatLng, 12);
       }
+    });
+  }
 
-      const ws = XLSX.utils.json_to_sheet(distanceResults);
-      const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, "المسافات");
-      XLSX.writeFile(wb, "المسافات_بين_الفروع.xlsx");
-    }
-  </script>
+  function exportToExcel() {
+    const items = allData[currentLayer];
+    const rows = items.map(f => {
+      const flat = { ...f.properties };
+      flat["Latitude"] = f.latlng.lat;
+      flat["Longitude"] = f.latlng.lng;
+      return flat;
+    });
+
+    const worksheet = XLSX.utils.json_to_sheet(rows);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Data");
+    XLSX.writeFile(workbook, `${currentLayer}_data.xlsx`);
+  }
+
+  // Load all layers
+  ['banks', 'srafara', 'services'].forEach(loadLayer);
+</script>
 </body>
 </html>
