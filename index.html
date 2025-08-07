@@ -2,7 +2,7 @@
 <html lang="ar">
 <head>
   <meta charset="UTF-8">
-  <title>خريطة موحدة للبنوك والسفارات والخدمات</title>
+  <title>الخريطة الموحدة للبنوك والصرافات وخدمات الدفع</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -18,11 +18,11 @@
       z-index: 1000;
       box-shadow: 0 0 5px #888;
       border-radius: 8px;
+      width: 250px;
     }
     .controls select, .controls button {
-      display: block;
+      width: 100%;
       margin-bottom: 5px;
-      width: 200px;
     }
   </style>
 </head>
@@ -31,153 +31,169 @@
 <div class="controls">
   <select id="layerSelect">
     <option value="banks">البنوك</option>
-    <option value="srafara">السفارات</option>
-    <option value="services">الخدمات</option>
+    <option value="srafara">الصرافات</option>
+    <option value="services">خدمات الدفع</option>
   </select>
-  <select id="governorateSelect">
-    <option value="all">اختر المحافظة</option>
-  </select>
-  <button onclick="findNearest()">أقرب موقع</button>
+
+  <select id="subSelect" style="display:none;"></select>
+
+  <button onclick="calculateDistances()">حساب المسافات</button>
   <button onclick="exportToExcel()">تصدير إلى Excel</button>
-  <button onclick="window.print()">طباعة</button>
 </div>
 
 <script>
-  const map = L.map('map').setView([31.95, 35.2], 8);
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+const map = L.map('map').setView([31.95, 35.2], 8);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
 
-  let layers = {
-    banks: L.layerGroup().addTo(map),
-    srafara: L.layerGroup(),
-    services: L.layerGroup()
-  };
+let layers = {
+  banks: L.layerGroup().addTo(map),
+  srafara: L.layerGroup(),
+  services: L.layerGroup()
+};
 
-  let dataSources = {
-    banks: "https://raw.githubusercontent.com/palestinebank/palestinebank.github.io/main/pal_banks.json",
-    srafara: "https://raw.githubusercontent.com/srafaramallah/srafaramallah.github.io/main/srafara.json",
-    services: "https://raw.githubusercontent.com/servicespayment/servicespayment.github.io/main/servicespayment.json"
-  };
+let allData = {
+  banks: [],
+  srafara: [],
+  services: []
+};
 
-  let allData = { banks: [], srafara: [], services: [] };
-  let currentMarkers = [];
-  let currentLayer = 'banks';
+let currentLayer = 'banks';
+let exportRows = [];
 
-  function loadLayer(name) {
-    fetch(dataSources[name])
-      .then(res => res.json())
-      .then(geojson => {
-        allData[name] = [];
-        const layer = L.geoJSON(geojson, {
-          onEachFeature: function (feature, layer) {
-            let props = feature.properties;
-            let content = '';
-            for (const key in props) {
-              content += `<b>${key}:</b> ${props[key]}<br>`;
-            }
-            layer.bindPopup(content);
-            allData[name].push({ ...feature, _popupContent: content, latlng: layer.getLatLng() });
-          },
-          pointToLayer: (feature, latlng) => {
-            return L.marker(latlng);
-          }
-        });
-        layers[name].clearLayers();
-        layers[name].addLayer(layer);
-        updateGovernorates(name);
-        if (name !== currentLayer) layers[name].remove();
+const dataSources = {
+  banks: "https://raw.githubusercontent.com/palestinebank/palestinebank.github.io/main/pal_banks.json",
+  pal_mang: "https://raw.githubusercontent.com/palestinebank/palestinebank.github.io/main/pal_mang.json",
+  srafara: "https://raw.githubusercontent.com/srafaramallah/srafaramallah.github.io/main/srafara.json",
+  services: "https://raw.githubusercontent.com/servicespayment/servicespayment.github.io/main/servicespayment.json"
+};
+
+// Load all layers
+fetch(dataSources.pal_mang).then(res => res.json()).then(data => {
+  const feature = data.features[0];
+  const latlng = L.latLng(feature.geometry.coordinates[1], feature.geometry.coordinates[0]);
+  feature.latlng = latlng;
+  feature._popupContent = `<b>المركز الرئيسي</b><br>${feature.properties?.الاسم || ''}`;
+  allData.pal_mang = feature;
+});
+
+['banks', 'srafara', 'services'].forEach(layer => {
+  fetch(dataSources[layer])
+    .then(res => res.json())
+    .then(geojson => {
+      allData[layer] = [];
+      const geoLayer = L.geoJSON(geojson, {
+        onEachFeature: (feature, layer) => {
+          const latlng = layer.getLatLng();
+          feature.latlng = latlng;
+          feature._popupContent = Object.entries(feature.properties || {})
+            .map(([k, v]) => `<b>${k}</b>: ${v}`).join('<br>');
+          allData[layer].push(feature);
+        },
+        pointToLayer: (feature, latlng) => L.marker(latlng)
       });
-  }
-
-  function updateGovernorates(name) {
-    const govSelect = document.getElementById("governorateSelect");
-    const items = allData[name];
-    const names = new Set();
-    items.forEach(f => {
-      const gov = f.properties?.المحافظة || f.properties?.Governorate || f.properties?.اسم_المحافظة || '';
-      if (gov) names.add(gov);
+      layers[layer].clearLayers();
+      layers[layer].addLayer(geoLayer);
+      if (layer !== currentLayer) layers[layer].remove();
     });
+});
 
-    govSelect.innerHTML = `<option value="all">اختر المحافظة</option>`;
-    names.forEach(name => {
+function switchLayer(layer) {
+  Object.keys(layers).forEach(l => map.removeLayer(layers[l]));
+  currentLayer = layer;
+  map.addLayer(layers[layer]);
+  updateSubSelect();
+}
+
+document.getElementById("layerSelect").addEventListener("change", e => {
+  switchLayer(e.target.value);
+});
+
+document.getElementById("subSelect").addEventListener("change", e => {
+  calculateDistances();
+});
+
+function updateSubSelect() {
+  const sub = document.getElementById("subSelect");
+  sub.style.display = 'none';
+  sub.innerHTML = '';
+
+  if (currentLayer === 'srafara') {
+    const names = [...new Set(allData.srafara.map(f => f.properties?.الاسم))];
+    sub.style.display = 'block';
+    names.forEach(n => {
       const opt = document.createElement("option");
-      opt.value = name;
-      opt.innerText = name;
-      govSelect.appendChild(opt);
+      opt.value = n;
+      opt.textContent = n;
+      sub.appendChild(opt);
+    });
+  } else if (currentLayer === 'services') {
+    const names = [...new Set(allData.services.map(f => f.properties?.شركة))];
+    sub.style.display = 'block';
+    names.forEach(n => {
+      const opt = document.createElement("option");
+      opt.value = n;
+      opt.textContent = n;
+      sub.appendChild(opt);
     });
   }
+}
 
-  function switchLayer(name) {
-    Object.keys(layers).forEach(l => map.removeLayer(layers[l]));
-    currentLayer = name;
-    map.addLayer(layers[name]);
+function calculateDistances() {
+  exportRows = [];
+  if (currentLayer === 'banks') {
+    const main = allData.pal_mang;
+    allData.banks.forEach(f => {
+      const dist = main.latlng.distanceTo(f.latlng) / 1000;
+      const popup = f._popupContent + `<br><b>المسافة:</b> ${dist.toFixed(2)} كم`;
+      L.polyline([main.latlng, f.latlng], { color: 'red' }).addTo(map);
+      L.popup().setLatLng(f.latlng).setContent(popup).openOn(map);
+      exportRows.push({ ...f.properties, "المسافة (كم)": dist.toFixed(2) });
+    });
+    L.popup().setLatLng(main.latlng).setContent(main._popupContent).openOn(map);
   }
 
-  document.getElementById("layerSelect").addEventListener("change", e => {
-    switchLayer(e.target.value);
-    updateGovernorates(e.target.value);
-  });
-
-  document.getElementById("governorateSelect").addEventListener("change", e => {
-    const selectedGov = e.target.value;
-    const items = allData[currentLayer];
-    layers[currentLayer].clearLayers();
-    items.forEach(f => {
-      const gov = f.properties?.المحافظة || f.properties?.Governorate || f.properties?.اسم_المحافظة || '';
-      if (selectedGov === 'all' || gov === selectedGov) {
-        const marker = L.marker(f.latlng).bindPopup(f._popupContent);
-        marker.addTo(layers[currentLayer]);
-      }
+  else if (currentLayer === 'srafara') {
+    const name = document.getElementById("subSelect").value;
+    const targets = allData.srafara.filter(f => f.properties?.الاسم === name);
+    const center = targets[0];
+    targets.slice(1).forEach(f => {
+      const dist = center.latlng.distanceTo(f.latlng) / 1000;
+      const popup = f._popupContent + `<br><b>المسافة:</b> ${dist.toFixed(2)} كم`;
+      L.polyline([center.latlng, f.latlng], { color: 'green' }).addTo(map);
+      L.popup().setLatLng(f.latlng).setContent(popup).openOn(map);
+      exportRows.push({ ...f.properties, "المسافة (كم)": dist.toFixed(2) });
     });
-  });
+    L.popup().setLatLng(center.latlng).setContent(center._popupContent).openOn(map);
+  }
 
-  function findNearest() {
-    if (!navigator.geolocation) {
-      alert("المتصفح لا يدعم تحديد الموقع");
-      return;
-    }
-
-    navigator.geolocation.getCurrentPosition(pos => {
-      const { latitude, longitude } = pos.coords;
-      const userLatLng = L.latLng(latitude, longitude);
-      let nearest = null;
-      let minDistance = Infinity;
-
-      allData[currentLayer].forEach(f => {
-        const d = userLatLng.distanceTo(f.latlng);
-        if (d < minDistance) {
-          minDistance = d;
-          nearest = f;
-        }
+  else if (currentLayer === 'services') {
+    const company = document.getElementById("subSelect").value;
+    const related = allData.services.filter(f => f.properties?.شركة === company);
+    const mains = related.slice(0, 5);
+    mains.forEach(main => {
+      related.forEach(f => {
+        if (main === f) return;
+        const dist = main.latlng.distanceTo(f.latlng) / 1000;
+        const popup = f._popupContent + `<br><b>المسافة:</b> ${dist.toFixed(2)} كم`;
+        L.polyline([main.latlng, f.latlng], { color: 'blue' }).addTo(map);
+        L.popup().setLatLng(f.latlng).setContent(popup).openOn(map);
+        exportRows.push({ ...f.properties, "المسافة (كم)": dist.toFixed(2) });
       });
-
-      if (nearest) {
-        const marker = L.marker(userLatLng).addTo(map).bindPopup("موقعك").openPopup();
-        L.polyline([userLatLng, nearest.latlng], { color: 'blue' }).addTo(map);
-        const dist_km = (minDistance / 1000).toFixed(2);
-        const popup = nearest._popupContent + `<b>المسافة:</b> ${dist_km} كم`;
-        L.marker(nearest.latlng).addTo(map).bindPopup(popup).openPopup();
-        map.setView(userLatLng, 12);
-      }
     });
+    mains.forEach(m => L.popup().setLatLng(m.latlng).setContent(m._popupContent + '<br><b>(مركز رئيسي)</b>').openOn(map));
   }
+}
 
-  function exportToExcel() {
-    const items = allData[currentLayer];
-    const rows = items.map(f => {
-      const flat = { ...f.properties };
-      flat["Latitude"] = f.latlng.lat;
-      flat["Longitude"] = f.latlng.lng;
-      return flat;
-    });
-
-    const worksheet = XLSX.utils.json_to_sheet(rows);
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, "Data");
-    XLSX.writeFile(workbook, `${currentLayer}_data.xlsx`);
+function exportToExcel() {
+  if (exportRows.length === 0) {
+    alert("لا توجد بيانات لتصديرها. الرجاء حساب المسافات أولاً.");
+    return;
   }
-
-  // Load all layers
-  ['banks', 'srafara', 'services'].forEach(loadLayer);
+  const worksheet = XLSX.utils.json_to_sheet(exportRows);
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, worksheet, "Distances");
+  XLSX.writeFile(workbook, `${currentLayer}_distances.xlsx`);
+}
 </script>
 </body>
 </html>
