@@ -2,167 +2,162 @@
 <html lang="ar">
 <head>
   <meta charset="UTF-8">
-  <title>دمج خرائط - GIS</title>
+  <title>الخريطة الموحدة - بنوك وصرافات وخدمات دفع</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <style>#map { height: 100vh; }</style>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/xlsx/dist/xlsx.full.min.js"></script>
+  <style>
+    #map { height: 90vh; }
+    #controls { padding: 10px; text-align: center; }
+    select, button { margin: 5px; padding: 5px; }
+  </style>
 </head>
 <body>
+  <div id="controls">
+    <select id="layerSelect">
+      <option value="">اختر نوع البيانات</option>
+      <option value="banks">البنوك</option>
+      <option value="srafara">الصرافين</option>
+      <option value="services">خدمات الدفع</option>
+    </select>
+    <select id="subSelect" style="display:none;"></select>
+    <button onclick="exportToExcel()">تصدير إلى Excel</button>
+  </div>
+  <div id="map"></div>
 
-<select id="mainSelector">
-  <option value="">اختر نوع البيانات</option>
-  <option value="banks">🟢 البنوك</option>
-  <option value="srafara">🔵 الصرافات</option>
-  <option value="services">🟡 خدمات الدفع</option>
-</select>
+  <script>
+    const map = L.map('map').setView([31.9, 35.2], 8);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
 
-<select id="secondarySelector" style="display:none;"></select>
-<button onclick="exportToExcel()">📥 تصدير Excel</button>
+    let allLayers = [];
+    let distanceData = [];
 
-<div id="map"></div>
+    function clearMap() {
+      allLayers.forEach(l => map.removeLayer(l));
+      allLayers = [];
+      distanceData = [];
+    }
 
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script>
-const map = L.map('map').setView([31.95, 35.23], 8);
-L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+    function toRad(x) { return x * Math.PI / 180; }
 
-let layersGroup = L.layerGroup().addTo(map);
-let excelData = [];
+    function haversine(lat1, lon1, lat2, lon2) {
+      const R = 6371;
+      const dLat = toRad(lat2 - lat1);
+      const dLon = toRad(lon2 - lon1);
+      const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      return R * c;
+    }
 
-let palBanksURL = "https://palestinebank.github.io/pal_banks.json";
-let palMangURL = "https://palestinebank.github.io/pal_mang.json";
-let srafaraURL = "https://srafaramallah.github.io/srafara.json";
-let servicesURL = "https://servicespayment.github.io/servicespayment.json";
+    async function loadJSON(url) {
+      const res = await fetch(url);
+      return await res.json();
+    }
 
-let palBanks, palMang, srafara, services;
+    async function handleLayerChange(type) {
+      clearMap();
+      const subSelect = document.getElementById('subSelect');
+      subSelect.style.display = 'none';
+      subSelect.innerHTML = '';
 
-Promise.all([
-  fetch(palBanksURL).then(res => res.json()),
-  fetch(palMangURL).then(res => res.json()),
-  fetch(srafaraURL).then(res => res.json()),
-  fetch(servicesURL).then(res => res.json())
-]).then(([b, m, s, v]) => {
-  palBanks = b;
-  palMang = m;
-  srafara = s;
-  services = v;
+      if (type === 'banks') {
+        const mang = await loadJSON('https://palestinebank.github.io/pal_mang.json');
+        const banks = await loadJSON('https://palestinebank.github.io/pal_banks.json');
+        const main = mang.features[0];
+        const [mainLon, mainLat] = main.geometry.coordinates;
+        const mainMarker = L.marker([mainLat, mainLon], {color: 'red'}).addTo(map).bindPopup('المركز الرئيسي').openPopup();
+        allLayers.push(mainMarker);
 
-  document.getElementById("mainSelector").addEventListener("change", onMainChange);
-  document.getElementById("secondarySelector").addEventListener("change", onSecondaryChange);
-});
+        banks.features.forEach(f => {
+          const [lon, lat] = f.geometry.coordinates;
+          const distance = haversine(mainLat, mainLon, lat, lon).toFixed(2);
+          const name = f.properties["الاسم"];
+          const marker = L.marker([lat, lon]).addTo(map).bindPopup(`${name}<br>المسافة: ${distance} كم`).openPopup();
+          const line = L.polyline([[mainLat, mainLon], [lat, lon]], {color: 'blue'}).addTo(map);
+          allLayers.push(marker, line);
+          distanceData.push({"الاسم": name, "المسافة (كم)": distance});
+        });
 
-function onMainChange() {
-  layersGroup.clearLayers();
-  excelData = [];
-  const type = this.value;
-  const secondary = document.getElementById("secondarySelector");
-  secondary.innerHTML = "";
-  secondary.style.display = "none";
+      } else if (type === 'srafara') {
+        const data = await loadJSON('https://srafaramallah.github.io/srafara.json');
+        const names = [...new Set(data.features.map(f => f.properties["اسم_ا"]))];
+        subSelect.style.display = 'inline-block';
+        names.forEach(n => {
+          const opt = document.createElement('option');
+          opt.value = n; opt.textContent = n;
+          subSelect.appendChild(opt);
+        });
+        subSelect.onchange = () => showSrafara(data, subSelect.value);
 
-  if (type === "banks") {
-    handleBanks();
-  } else if (type === "srafara") {
-    let names = [...new Set(srafara.features.map(f => f.properties.name))];
-    names.forEach(n => {
-      let op = document.createElement("option");
-      op.value = n;
-      op.textContent = n;
-      secondary.appendChild(op);
-    });
-    secondary.style.display = "inline";
-  } else if (type === "services") {
-    let names = [...new Set(services.features.map(f => f.properties["شركة"]))];
-    names.forEach(n => {
-      let op = document.createElement("option");
-      op.value = n;
-      op.textContent = n;
-      secondary.appendChild(op);
-    });
-    secondary.style.display = "inline";
-  }
-}
+      } else if (type === 'services') {
+        const data = await loadJSON('https://servicespayment.github.io/servicespayment.json');
+        const names = [...new Set(data.features.map(f => f.properties["شركة"]))];
+        subSelect.style.display = 'inline-block';
+        names.forEach(n => {
+          const opt = document.createElement('option');
+          opt.value = n; opt.textContent = n;
+          subSelect.appendChild(opt);
+        });
+        subSelect.onchange = () => showServices(data, subSelect.value);
+      }
+    }
 
-function onSecondaryChange() {
-  layersGroup.clearLayers();
-  excelData = [];
-  const main = document.getElementById("mainSelector").value;
-  const val = this.value;
-  if (main === "srafara") {
-    handleSrafara(val);
-  } else if (main === "services") {
-    handleServices(val);
-  }
-}
+    function showSrafara(data, name) {
+      clearMap();
+      const features = data.features.filter(f => f.properties["اسم_ا"] === name);
+      if (features.length === 0) return;
+      const main = features[Math.floor(Math.random() * features.length)];
+      const [mainLon, mainLat] = main.geometry.coordinates;
+      const mainMarker = L.marker([mainLat, mainLon], {color: 'red'}).addTo(map).bindPopup('المركز الرئيسي').openPopup();
+      allLayers.push(mainMarker);
 
-function handleBanks() {
-  const main = palMang.features[0];
-  const [mlon, mlat] = main.geometry.coordinates;
-  const mPoint = L.latLng(mlat, mlon);
-  const mainMarker = L.marker(mPoint, {color: 'red'}).addTo(layersGroup).bindPopup("🏢 المركز الرئيسي");
-  map.setView(mPoint, 10);
+      features.forEach(f => {
+        const [lon, lat] = f.geometry.coordinates;
+        const distance = haversine(mainLat, mainLon, lat, lon).toFixed(2);
+        const title = f.properties["اسم_ا"];
+        const address = f.properties["العنو"] || "غير متوفر";
+        const marker = L.marker([lat, lon]).addTo(map).bindPopup(`${title}<br>العنوان: ${address}<br>المسافة: ${distance} كم`).openPopup();
+        const line = L.polyline([[mainLat, mainLon], [lat, lon]], {color: 'green'}).addTo(map);
+        allLayers.push(marker, line);
+        distanceData.push({"الاسم": title, "العنوان": address, "المسافة (كم)": distance});
+      });
+    }
 
-  palBanks.features.forEach(f => {
-    const [lon, lat] = f.geometry.coordinates;
-    const dist = mPoint.distanceTo([lat, lon]) / 1000;
-    const name = f.properties["الاسم"];
-    const popup = `<b>${name}</b><br>📏 ${dist.toFixed(2)} كم`;
-    L.marker([lat, lon]).addTo(layersGroup).bindPopup(popup).openPopup();
-    L.polyline([mPoint, [lat, lon]], {color:'green'}).addTo(layersGroup);
-    excelData.push({ الاسم: name, المسافة: dist.toFixed(2) + " كم" });
-  });
-}
+    function showServices(data, name) {
+      clearMap();
+      const features = data.features.filter(f => f.properties["شركة"] === name);
+      if (features.length === 0) return;
+      const centers = features.slice(0, 5);
 
-function handleSrafara(name) {
-  const features = srafara.features.filter(f => f.properties.name === name);
-  if (features.length === 0) return;
-  const main = features[Math.floor(Math.random() * features.length)];
-  const [mlon, mlat] = main.geometry.coordinates;
-  const mPoint = L.latLng(mlat, mlon);
-  L.marker(mPoint, {color: 'red'}).addTo(layersGroup).bindPopup("🏢 المركز الرئيسي").openPopup();
-  map.setView(mPoint, 10);
+      centers.forEach(center => {
+        const [mainLon, mainLat] = center.geometry.coordinates;
+        const centerName = center.properties["شركة"];
+        const address = center.properties["العنوان"] || "غير متوفر";
+        const centerMarker = L.marker([mainLat, mainLon], {color: 'red'}).addTo(map).bindPopup(`مركز رئيسي - ${centerName}<br>${address}`).openPopup();
+        allLayers.push(centerMarker);
 
-  features.forEach(f => {
-    const [lon, lat] = f.geometry.coordinates;
-    const dist = mPoint.distanceTo([lat, lon]) / 1000;
-    const addr = f.properties["العنو"];
-    const popup = `<b>${f.properties.name}</b><br>📍 ${addr}<br>📏 ${dist.toFixed(2)} كم`;
-    L.marker([lat, lon]).addTo(layersGroup).bindPopup(popup).openPopup();
-    L.polyline([mPoint, [lat, lon]], {color:'blue'}).addTo(layersGroup);
-    excelData.push({ الاسم: f.properties.name, العنوان: addr, المسافة: dist.toFixed(2) + " كم" });
-  });
-}
+        features.forEach(f => {
+          const [lon, lat] = f.geometry.coordinates;
+          const distance = haversine(mainLat, mainLon, lat, lon).toFixed(2);
+          const title = f.properties["شركة"];
+          const address = f.properties["العنوان"] || "غير متوفر";
+          const marker = L.marker([lat, lon]).addTo(map).bindPopup(`${title}<br>العنوان: ${address}<br>المسافة: ${distance} كم`).openPopup();
+          const line = L.polyline([[mainLat, mainLon], [lat, lon]], {color: 'orange'}).addTo(map);
+          allLayers.push(marker, line);
+          distanceData.push({"الاسم": title, "العنوان": address, "المسافة (كم)": distance});
+        });
+      });
+    }
 
-function handleServices(company) {
-  const all = services.features.filter(f => f.properties["شركة"] === company);
-  const mains = all.slice(0, 5);
-  mains.forEach(m => {
-    const [mlon, mlat] = m.geometry.coordinates;
-    const mPoint = L.latLng(mlat, mlon);
-    L.marker(mPoint, {color: 'red'}).addTo(layersGroup).bindPopup("🏢 مركز رئيسي").openPopup();
+    function exportToExcel() {
+      const ws = XLSX.utils.json_to_sheet(distanceData);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Distances');
+      XLSX.writeFile(wb, 'distances.xlsx');
+    }
 
-    all.forEach(f => {
-      const [lon, lat] = f.geometry.coordinates;
-      const dist = mPoint.distanceTo([lat, lon]) / 1000;
-      const addr = f.properties["العنوان"];
-      const popup = `<b>${f.properties["شركة"]}</b><br>📍 ${addr}<br>📏 ${dist.toFixed(2)} كم`;
-      L.marker([lat, lon]).addTo(layersGroup).bindPopup(popup).openPopup();
-      L.polyline([mPoint, [lat, lon]], {color:'orange'}).addTo(layersGroup);
-      excelData.push({ الشركة: f.properties["شركة"], العنوان: addr, المسافة: dist.toFixed(2) + " كم" });
-    });
-  });
-}
-
-function exportToExcel() {
-  if (excelData.length === 0) {
-    alert("لا يوجد بيانات لتصديرها!");
-    return;
-  }
-  const ws = XLSX.utils.json_to_sheet(excelData);
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, "المسافات");
-  XLSX.writeFile(wb, "Distances.xlsx");
-}
-</script>
+    document.getElementById('layerSelect').addEventListener('change', e => handleLayerChange(e.target.value));
+  </script>
 </body>
 </html>
